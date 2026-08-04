@@ -73,11 +73,22 @@ fi
 echo
 echo "Config-file smoke test (custom-ports.toml -> port 20010)..."
 CFG_LOG="$(mktemp)"
-trap 'rm -f "$SUB_LOG" "$CFG_LOG"; rm -f "$SCRIPT_DIR/zzdds.toml"' EXIT
+trap 'rm -f "$SUB_LOG" "$CFG_LOG"' EXIT
 
+# Deliberately does NOT rm ./zzdds.toml here: ShapeMain.java's own shutdown
+# hook already restores a pre-existing zzdds.toml (or removes the staged one
+# if there wasn't one) when the JVM exits below. An unconditional rm here
+# would delete that restored original right back out from under it -- and
+# for that restore-before-we-check to actually be visible below, $CFG_PID
+# must be java's own PID, not a wrapper subshell's: without `exec`, "(cd DIR
+# && java ...) &" backgrounds the *subshell*, so `kill "$CFG_PID"` below
+# only kills that wrapper -- java is left running as an orphan, unsignaled,
+# and `wait "$CFG_PID"` returns as soon as the wrapper exits, well before
+# java's shutdown hook (and its zzdds.toml restore) has actually run.
+#
 # cd into SCRIPT_DIR so the staged ./zzdds.toml (relative to cwd) lands next
 # to this run, not wherever run.sh was invoked from.
-(cd "$SCRIPT_DIR" && java --enable-native-access=ALL-UNNAMED -Djava.library.path="$ZZDDS_ZIG_OUT/lib" -cp "$CLASSES_DIR" \
+(cd "$SCRIPT_DIR" && exec java --enable-native-access=ALL-UNNAMED -Djava.library.path="$ZZDDS_ZIG_OUT/lib" -cp "$CLASSES_DIR" \
     ShapeMain -S --config "$CONFIG_FILE" -i 10 --read-period 500 >"$CFG_LOG" 2>&1) &
 CFG_PID=$!
 
