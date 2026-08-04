@@ -1048,6 +1048,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         std.process.exit(1);
     }
 
+    if (opts.num_topics < 1 or opts.num_topics > MAX_TOPICS) {
+        std.log.err("--num-topics must be between 1 and {d} (got {d})", .{ MAX_TOPICS, opts.num_topics });
+        std.process.exit(1);
+    }
+
     if (opts.periodic_announcement_ms > 0) {
         var buf: [16]u8 = undefined;
         const val = std.fmt.bufPrintZ(&buf, "{d}", .{opts.periodic_announcement_ms}) catch unreachable;

@@ -386,8 +386,32 @@ public class ShapeMain {
             // file with exactly that name/location with zero explicit call --
             // the same mechanism this example's own zzdds.toml (if any) would
             // rely on, just staged at run time instead of build time.
+            //
+            // A real, pre-existing ./zzdds.toml in this cwd must not be
+            // permanently destroyed by staging ours over it -- back it up and
+            // restore it on exit via the same shutdown-hook mechanism as
+            // allDone above, so it survives Ctrl-C/SIGTERM as well as a
+            // normal run, not just System.exit(1) below on a copy failure.
+            java.nio.file.Path target = Paths.get("zzdds.toml");
+            java.nio.file.Path backup = Paths.get("zzdds.toml.orig." + ProcessHandle.current().pid());
             try {
-                Files.copy(Paths.get(opts.configPath), Paths.get("zzdds.toml"), StandardCopyOption.REPLACE_EXISTING);
+                if (Files.exists(target)) {
+                    Files.move(target, backup, StandardCopyOption.REPLACE_EXISTING);
+                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                        try {
+                            Files.move(backup, target, StandardCopyOption.REPLACE_EXISTING);
+                        } catch (java.io.IOException ignored) {
+                        }
+                    }));
+                } else {
+                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                        try {
+                            Files.deleteIfExists(target);
+                        } catch (java.io.IOException ignored) {
+                        }
+                    }));
+                }
+                Files.copy(Paths.get(opts.configPath), target, StandardCopyOption.REPLACE_EXISTING);
             } catch (java.io.IOException e) {
                 System.err.println("failed to load config file '" + opts.configPath + "': " + e.getMessage());
                 System.exit(1);
