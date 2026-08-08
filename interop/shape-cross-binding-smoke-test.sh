@@ -166,16 +166,21 @@ run_cft_check() {
 
     # Subscriber -i gates the outer poll-loop count, not "samples received",
     # and there's no way to stop early once satisfied (only SIGINT sets
-    # shape_main's g_all_done) -- give it much more budget than the
-    # publisher's 8 writes so discovery/match settling time can't eat into
-    # the window it actually has left to receive data (still comfortably
-    # inside this function's own 15s process timeout: 20 * 300ms = 6s).
-    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 15 "${sub_run[@]}" \
-        -S -d "$DOMAIN" --cft "shapesize > 2" -i 20 --read-period "$PERIOD_MS" \
+    # shape_main's g_all_done). Give it a generous 12s budget (-i 40 at the
+    # same read-period) -- comfortably more than the publisher's own 2.4s
+    # write window (8 * 300ms) plus realistic SPDP/SEDP discovery/match
+    # settling time, including on a slower/noisier CI runner than a local
+    # dev box. A longer pre-publish sleep (2s, up from the plain mesh
+    # check's 1s) gives discovery extra room to complete *before* the
+    # publisher's first write -- VOLATILE durability (the default) means a
+    # sample written before the reader has actually matched is lost for
+    # that reader forever, not just delayed.
+    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 20 "${sub_run[@]}" \
+        -S -d "$DOMAIN" --cft "shapesize > 2" -i 40 --read-period "$PERIOD_MS" \
         > "$logdir/sub.log" 2>&1 &
     local sub_pid=$!
-    sleep 1
-    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 15 "${pub_run[@]}" \
+    sleep 2
+    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 20 "${pub_run[@]}" \
         -P -w -d "$DOMAIN" -z 0 --size-modulo 4 -i 8 --write-period "$PERIOD_MS" \
         > "$logdir/pub.log" 2>&1
     local pub_rc=$?
