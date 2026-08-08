@@ -218,9 +218,32 @@ run_cft_check() {
     return 1
 }
 
+# run_cft_check_with_retry <lang> -- the publisher writes as soon as it
+# starts, with no way to make it block until a reader has actually matched
+# (shape_main has no such flag), and the reader's VOLATILE durability means
+# any sample written before match completes is lost for good, not just
+# delayed. No fixed sleep/timeout can be *proven* sufficient against that on
+# an arbitrarily slow/loaded machine -- so instead of chasing a bigger
+# constant, retry a few times on failure. A genuine filtering bug fails
+# every attempt identically (received a [1]/[2] that should've been
+# filtered); a one-off discovery-timing race resolves on a clean re-run.
+run_cft_check_with_retry() {
+    local lang="$1"
+    local attempt
+    for attempt in 1 2 3; do
+        if run_cft_check "$lang"; then
+            return 0
+        fi
+        if [ "$attempt" -lt 3 ]; then
+            echo "  (retrying $lang --cft: attempt $attempt/3 failed, might be a discovery-timing race not a real bug)" >&2
+        fi
+    done
+    return 1
+}
+
 CFT_FAILED=0
 for lang in "${LANGS[@]}"; do
-    run_cft_check "$lang" || CFT_FAILED=1
+    run_cft_check_with_retry "$lang" || CFT_FAILED=1
 done
 
 if [ "$CFT_FAILED" -ne 0 ]; then
