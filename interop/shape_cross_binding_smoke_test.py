@@ -183,6 +183,23 @@ def run_pair(pub_lang: str, sub_lang: str, zig_out: Path) -> bool:
 # hung for 40+ minutes because a Java subscriber didn't react to SIGINT
 # the way the native binaries do, and a raw `wait "$pid"` had no timeout.
 # That can't happen here -- stop() always returns within its grace period.
+#
+# One more wrinkle, found live: shape_main's publisher has its own
+# internal, hardcoded 10-second "give up and exit cleanly if unmatched"
+# deadline (`match_deadline`/`READER_NOT_MATCHED` in shape_main.zig) --
+# not exposed via any CLI flag. So polling *this* harness's log for up to
+# MATCH_POLL_TIMEOUT_S is moot past ~10s: on a genuinely slow-but-working
+# machine (not broken, just slow SPDP/SEDP), the publisher process itself
+# would already be dead, silently, well before this harness's own window
+# closes -- no amount of raising MATCH_POLL_TIMEOUT_S fixes that, since
+# the ceiling lives in the binary being tested, not in this script. Can't
+# change shape_main.zig from here (a different repo), so the harness
+# relaunches a fresh publisher attempt each time the current one exits
+# without having matched, keeping the *same* long-lived subscriber running
+# throughout (it has no such internal deadline) -- overall wall-clock
+# budget is still MATCH_POLL_TIMEOUT_S, just spent as however many
+# ~10s attempts fit in it instead of one long wait on a single attempt
+# that can only ever use the first ~10s of it anyway.
 
 MATCH_POLL_TIMEOUT_S = 30
 POST_MATCH_MARGIN_S = 2
@@ -205,24 +222,29 @@ def run_cft_check(lang: str, zig_out: Path) -> bool:
         env=env,
         log_path=logdir / "sub.log",
     )
-    pub = LiveProcess(
-        ["stdbuf", "-oL", "-eL", *base_cmd(lang, zig_out), "-P", "-w", "-d", DOMAIN, "-z", "0", "--size-modulo", "4", "-i", "-1", "--write-period", PERIOD_MS],
-        env=env,
-        log_path=logdir / "pub.log",
-    )
+
+    pub_cmd_argv = ["stdbuf", "-oL", "-eL", *base_cmd(lang, zig_out), "-P", "-w", "-d", DOMAIN, "-z", "0", "--size-modulo", "4", "-i", "-1", "--write-period", PERIOD_MS]
 
     matched = False
+    pub = None
+    attempt = 0
     deadline = time.monotonic() + MATCH_POLL_TIMEOUT_S
     while time.monotonic() < deadline:
+        if pub is None or pub.poll() is not None:
+            # First attempt, or the previous one hit its own internal
+            # give-up deadline and exited unmatched -- relaunch fresh.
+            attempt += 1
+            pub = LiveProcess(pub_cmd_argv, env=env, log_path=logdir / f"pub-attempt-{attempt}.log")
         if "on_publication_matched()" in pub.log_text():
             matched = True
             break
         time.sleep(0.1)
 
     if not matched:
-        pub.stop()
+        if pub is not None:
+            pub.stop()
         sub.stop()
-        print_fail(label, f"publisher never reported a match within {MATCH_POLL_TIMEOUT_S}s", ("publisher", pub), ("subscriber", sub))
+        print_fail(label, f"publisher never reported a match within {MATCH_POLL_TIMEOUT_S}s across {attempt} attempt(s)", ("publisher (last attempt)", pub), ("subscriber", sub))
         return False
 
     time.sleep(POST_MATCH_MARGIN_S)
