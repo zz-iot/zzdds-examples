@@ -164,12 +164,14 @@ run_cft_check() {
     build_cmd "$lang"; local sub_run=("${CMD[@]}")
     build_cmd "$lang"; local pub_run=("${CMD[@]}")
 
-    # Subscriber -i gates the outer poll-loop count, not "samples received"
-    # -- give it the same iteration budget as the publisher's write count
-    # (not the smaller expected-after-filtering count) so it stays alive
-    # long enough for discovery/match/delivery to actually happen.
+    # Subscriber -i gates the outer poll-loop count, not "samples received",
+    # and there's no way to stop early once satisfied (only SIGINT sets
+    # shape_main's g_all_done) -- give it much more budget than the
+    # publisher's 8 writes so discovery/match settling time can't eat into
+    # the window it actually has left to receive data (still comfortably
+    # inside this function's own 15s process timeout: 20 * 300ms = 6s).
     LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 15 "${sub_run[@]}" \
-        -S -d "$DOMAIN" --cft "shapesize > 2" -i 8 --read-period "$PERIOD_MS" \
+        -S -d "$DOMAIN" --cft "shapesize > 2" -i 20 --read-period "$PERIOD_MS" \
         > "$logdir/sub.log" 2>&1 &
     local sub_pid=$!
     sleep 1
@@ -180,20 +182,31 @@ run_cft_check() {
     wait "$sub_pid"
     local sub_rc=$?
 
+    # Exact-count check, not presence-only: shapesize cycles 1,2,3,4,1,2,3,4
+    # across the 8 published samples, so a correctly filtering subscriber
+    # (shapesize > 2) must receive exactly two 3s and two 4s -- no 1s/2s
+    # (filter actually filters) and no fewer than 4 matches (delivery wasn't
+    # silently incomplete).
+    local n1 n2 n3 n4
+    n1=$(grep -cE '\[1\]$' "$logdir/sub.log")
+    n2=$(grep -cE '\[2\]$' "$logdir/sub.log")
+    n3=$(grep -cE '\[3\]$' "$logdir/sub.log")
+    n4=$(grep -cE '\[4\]$' "$logdir/sub.log")
+
     local ok=1
     [ "$pub_rc" -eq 0 ] || ok=0
     [ "$sub_rc" -eq 0 ] || ok=0
-    # Every received sample must have shapesize 3 or 4 -- if a 1 or 2 ever
-    # arrived, the filter didn't actually filter.
-    grep -Eq '\[(1|2)\]$' "$logdir/sub.log" && ok=0
-    grep -Eq '\[(3|4)\]$' "$logdir/sub.log" || ok=0
+    [ "$n1" -eq 0 ] || ok=0
+    [ "$n2" -eq 0 ] || ok=0
+    [ "$n3" -eq 2 ] || ok=0
+    [ "$n4" -eq 2 ] || ok=0
 
     if [ "$ok" -eq 1 ]; then
         echo "OK: $label"
         rm -rf "$logdir"
         return 0
     fi
-    echo "FAIL: $label (pub_rc=$pub_rc sub_rc=$sub_rc)" >&2
+    echo "FAIL: $label (pub_rc=$pub_rc sub_rc=$sub_rc, received [1]=$n1 [2]=$n2 [3]=$n3 [4]=$n4, expected 0 0 2 2)" >&2
     echo "-- publisher log --" >&2; cat "$logdir/pub.log" >&2
     echo "-- subscriber log --" >&2; cat "$logdir/sub.log" >&2
     rm -rf "$logdir"
