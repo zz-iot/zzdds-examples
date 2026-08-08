@@ -24,8 +24,9 @@ java/
   shape/              Java port of zig/shape
   listener-pubsub/    pub/sub over real UDP discovery, exercising the JNI listener path
 interop/
-  cross-binding-smoke-test.sh          C and C++ custom-allocator interop
-  shape-cross-binding-smoke-test.sh    all 12 ordered pairs of the 4 shape ports
+  cross-binding-smoke-test.sh              C and C++ custom-allocator interop
+  shape-cross-binding-smoke-test.sh        all 12 ordered pairs of the 4 shape ports, plus --cft
+  hello-world-cross-binding-smoke-test.sh  all 12 ordered pairs of the 4 hello_world ports
 
 run-all.sh   builds+runs everything above at once, skipping what your zzdds build doesn't support
 ```
@@ -130,5 +131,6 @@ no camera/display/hardware required:
 ```sh
 ZZDDS_ZIG_OUT=/path/to/zzdds/zig-out ./interop/cross-binding-smoke-test.sh
 ZZDDS_ZIG_OUT=/path/to/zzdds/zig-out ./interop/shape-cross-binding-smoke-test.sh
+ZZDDS_ZIG_OUT=/path/to/zzdds/zig-out ./interop/hello-world-cross-binding-smoke-test.sh
 ZZDDS_ZIG_OUT=/path/to/zzdds/zig-out ./cpp/opencv_zzdds/smoke-test.sh
 ```

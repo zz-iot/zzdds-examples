@@ -143,3 +143,70 @@ if [ "$FAILED" -ne 0 ]; then
     exit 1
 fi
 echo "OK: all 12 shape_main cross-binding pairs (zig, c, cpp, java) interoperate."
+
+# ── ContentFilteredTopic (--cft) check, one per binding ───────────────────
+#
+# Filtering happens entirely on the subscriber side (each binding's own
+# generated get_field_from_cdr), so a same-language pair per binding is
+# enough to prove each backend's filter codegen actually works -- this
+# isn't about wire interop (already proven above), it's about "does this
+# binding's ContentFilteredTopic reader actually drop non-matching samples."
+#
+# Publisher cycles shapesize 1,2,3,4,1,2,3,4 deterministically (-z 0
+# --size-modulo 4); subscriber filters for "shapesize > 2", so exactly half
+# of 8 published samples (the 3s and 4s) should ever reach it.
+
+run_cft_check() {
+    local lang="$1"
+    local label="$lang --cft"
+    local logdir; logdir="$(mktemp -d)"
+
+    build_cmd "$lang"; local sub_run=("${CMD[@]}")
+    build_cmd "$lang"; local pub_run=("${CMD[@]}")
+
+    # Subscriber -i gates the outer poll-loop count, not "samples received"
+    # -- give it the same iteration budget as the publisher's write count
+    # (not the smaller expected-after-filtering count) so it stays alive
+    # long enough for discovery/match/delivery to actually happen.
+    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 15 "${sub_run[@]}" \
+        -S -d "$DOMAIN" --cft "shapesize > 2" -i 8 --read-period "$PERIOD_MS" \
+        > "$logdir/sub.log" 2>&1 &
+    local sub_pid=$!
+    sleep 1
+    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 15 "${pub_run[@]}" \
+        -P -w -d "$DOMAIN" -z 0 --size-modulo 4 -i 8 --write-period "$PERIOD_MS" \
+        > "$logdir/pub.log" 2>&1
+    local pub_rc=$?
+    wait "$sub_pid"
+    local sub_rc=$?
+
+    local ok=1
+    [ "$pub_rc" -eq 0 ] || ok=0
+    [ "$sub_rc" -eq 0 ] || ok=0
+    # Every received sample must have shapesize 3 or 4 -- if a 1 or 2 ever
+    # arrived, the filter didn't actually filter.
+    grep -Eq '\[(1|2)\]$' "$logdir/sub.log" && ok=0
+    grep -Eq '\[(3|4)\]$' "$logdir/sub.log" || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        echo "OK: $label"
+        rm -rf "$logdir"
+        return 0
+    fi
+    echo "FAIL: $label (pub_rc=$pub_rc sub_rc=$sub_rc)" >&2
+    echo "-- publisher log --" >&2; cat "$logdir/pub.log" >&2
+    echo "-- subscriber log --" >&2; cat "$logdir/sub.log" >&2
+    rm -rf "$logdir"
+    return 1
+}
+
+CFT_FAILED=0
+for lang in "${LANGS[@]}"; do
+    run_cft_check "$lang" || CFT_FAILED=1
+done
+
+if [ "$CFT_FAILED" -ne 0 ]; then
+    echo "FAIL: shape ContentFilteredTopic check" >&2
+    exit 1
+fi
+echo "OK: --cft filters correctly in all 4 bindings (zig, c, cpp, java)."
