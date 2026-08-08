@@ -156,8 +156,16 @@ echo "OK: all 12 shape_main cross-binding pairs (zig, c, cpp, java) interoperate
 # --size-modulo 4); subscriber filters for "shapesize > 2", so exactly half
 # of 8 published samples (the 3s and 4s) should ever reach it.
 
+# run_cft_check <lang> <pre_publish_sleep_s> <sub_iterations> -- the
+# publisher writes as soon as it starts (shape_main has no flag to make it
+# block until a reader has actually matched), and the reader's VOLATILE
+# durability means any sample written before match completes is lost for
+# good, not just delayed. The caller (run_cft_check_with_retry) controls
+# how much runway this attempt gets, escalating on each retry rather than
+# reusing the same fixed delay -- see that function's comment for why a
+# single fixed number can never be proven sufficient.
 run_cft_check() {
-    local lang="$1"
+    local lang="$1" pre_sleep="$2" sub_iters="$3"
     local label="$lang --cft"
     local logdir; logdir="$(mktemp -d)"
 
@@ -166,21 +174,15 @@ run_cft_check() {
 
     # Subscriber -i gates the outer poll-loop count, not "samples received",
     # and there's no way to stop early once satisfied (only SIGINT sets
-    # shape_main's g_all_done). Give it a generous 12s budget (-i 40 at the
-    # same read-period) -- comfortably more than the publisher's own 2.4s
-    # write window (8 * 300ms) plus realistic SPDP/SEDP discovery/match
-    # settling time, including on a slower/noisier CI runner than a local
-    # dev box. A longer pre-publish sleep (2s, up from the plain mesh
-    # check's 1s) gives discovery extra room to complete *before* the
-    # publisher's first write -- VOLATILE durability (the default) means a
-    # sample written before the reader has actually matched is lost for
-    # that reader forever, not just delayed.
-    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 20 "${sub_run[@]}" \
-        -S -d "$DOMAIN" --cft "shapesize > 2" -i 40 --read-period "$PERIOD_MS" \
+    # shape_main's g_all_done) -- so its budget must comfortably exceed
+    # pre_sleep + the publisher's own 2.4s write window (8 * 300ms).
+    local proc_timeout=$(( pre_sleep + (sub_iters * PERIOD_MS / 1000) + 15 ))
+    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout "$proc_timeout" "${sub_run[@]}" \
+        -S -d "$DOMAIN" --cft "shapesize > 2" -i "$sub_iters" --read-period "$PERIOD_MS" \
         > "$logdir/sub.log" 2>&1 &
     local sub_pid=$!
-    sleep 2
-    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout 20 "${pub_run[@]}" \
+    sleep "$pre_sleep"
+    LD_LIBRARY_PATH="$ZZDDS_ZIG_OUT/lib" timeout "$proc_timeout" "${pub_run[@]}" \
         -P -w -d "$DOMAIN" -z 0 --size-modulo 4 -i 8 --write-period "$PERIOD_MS" \
         > "$logdir/pub.log" 2>&1
     local pub_rc=$?
@@ -218,24 +220,27 @@ run_cft_check() {
     return 1
 }
 
-# run_cft_check_with_retry <lang> -- the publisher writes as soon as it
-# starts, with no way to make it block until a reader has actually matched
-# (shape_main has no such flag), and the reader's VOLATILE durability means
-# any sample written before match completes is lost for good, not just
-# delayed. No fixed sleep/timeout can be *proven* sufficient against that on
-# an arbitrarily slow/loaded machine -- so instead of chasing a bigger
-# constant, retry a few times on failure. A genuine filtering bug fails
-# every attempt identically (received a [1]/[2] that should've been
-# filtered); a one-off discovery-timing race resolves on a clean re-run.
+# run_cft_check_with_retry <lang> -- retrying with the *same* fixed
+# pre-publish delay on every attempt doesn't help against a environment
+# that's consistently slow (not just a one-off blip), since every attempt
+# would then race the exact same way. So each attempt gets a longer
+# pre-publish delay and a correspondingly larger subscriber budget than the
+# last (2s/40 iters, then 5s/60, then 10s/90) -- converging correctly
+# regardless of how slow SPDP/SEDP discovery actually is on this machine,
+# not just tolerating a random one-off race. A genuine filtering bug still
+# fails every attempt identically (a [1]/[2] that should've been filtered
+# doesn't go away just because the run took longer).
 run_cft_check_with_retry() {
     local lang="$1"
+    local pre_sleeps=(2 5 10)
+    local sub_iters=(40 60 90)
     local attempt
-    for attempt in 1 2 3; do
-        if run_cft_check "$lang"; then
+    for attempt in 0 1 2; do
+        if run_cft_check "$lang" "${pre_sleeps[$attempt]}" "${sub_iters[$attempt]}"; then
             return 0
         fi
-        if [ "$attempt" -lt 3 ]; then
-            echo "  (retrying $lang --cft: attempt $attempt/3 failed, might be a discovery-timing race not a real bug)" >&2
+        if [ "$attempt" -lt 2 ]; then
+            echo "  (retrying $lang --cft with a longer pre-publish delay: attempt $((attempt + 1))/3 failed, might be a discovery-timing race not a real bug)" >&2
         fi
     done
     return 1
