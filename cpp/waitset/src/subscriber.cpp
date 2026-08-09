@@ -63,9 +63,26 @@ constexpr int WATCHDOG_POLL_MS = 50;
 class Watchdog {
 public:
     Watchdog(std::shared_ptr<::DDS::GuardCondition> gc, int deadline_ms)
-        : gc_(std::move(gc)), deadline_(std::chrono::steady_clock::now() + std::chrono::milliseconds(deadline_ms))
+        : gc_(std::move(gc)), deadline_(std::chrono::steady_clock::now() + std::chrono::milliseconds(deadline_ms)),
+          thread_([this] { run(); })
     {}
 
+    Watchdog(const Watchdog&) = delete;
+    Watchdog& operator=(const Watchdog&) = delete;
+
+    // Idempotent and safe to skip entirely -- ~Watchdog() calls this too, so
+    // every exit path in main() (including an early "FAIL:" return taken
+    // before the happy-path call below) still stops and joins the thread
+    // instead of destroying it while still joinable, which calls
+    // std::terminate().
+    void stop_and_join() {
+        stop_.store(true);
+        if (thread_.joinable()) thread_.join();
+    }
+
+    ~Watchdog() { stop_and_join(); }
+
+private:
     void run() {
         while (!stop_.load()) {
             if (std::chrono::steady_clock::now() >= deadline_) {
@@ -77,12 +94,10 @@ public:
         }
     }
 
-    void stop() { stop_.store(true); }
-
-private:
     std::shared_ptr<::DDS::GuardCondition> gc_;
     std::chrono::steady_clock::time_point deadline_;
     std::atomic<bool> stop_{false};
+    std::thread thread_;
 };
 
 uint32_t parse_domain(int argc, char **argv) {
@@ -189,7 +204,6 @@ int main(int argc, char **argv) {
     }
 
     Watchdog watchdog(gc, OVERALL_DEADLINE_MS);
-    std::thread watchdog_thread([&watchdog] { watchdog.run(); });
 
     // ── Main loop: wait, branch on which conditions triggered ───────────────
 
@@ -238,8 +252,7 @@ int main(int argc, char **argv) {
 
     std::printf("Subscriber: received all %d samples.\n", EXPECTED_SAMPLES);
 
-    watchdog.stop();
-    watchdog_thread.join();
+    watchdog.stop_and_join();
 
     // Well-behaved cleanup: detach and delete every condition explicitly
     // before tearing the reader down (contrast with publisher.cpp, which
