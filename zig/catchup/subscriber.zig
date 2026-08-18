@@ -49,16 +49,23 @@ const State = struct {
     reader: catchup_gen.HistoryEventDataReader = undefined,
 };
 
-fn checkAllDone(state: *State) void {
-    if (!state.historical_confirmed.load(.acquire)) return;
+// Pure readiness check -- does NOT store all_done itself. Callers decide
+// when it's safe to actually commit the flag: main() deletes the reader
+// as soon as it observes state.all_done, so storing it while
+// onDataAvailable is still inside its take loop would let
+// delete_datareader() race that same invocation's next take_next_sample()
+// call.
+fn readyToFinish(state: *State) bool {
+    if (!state.historical_confirmed.load(.acquire)) return false;
     for (&state.live_received) |*v| {
-        if (!v.load(.acquire)) return;
+        if (!v.load(.acquire)) return false;
     }
-    state.all_done.store(true, .release);
+    return true;
 }
 
 fn onDataAvailable(state: *State, dr: DDS.DataReader) void {
     _ = dr;
+    var became_done = false;
     while (true) {
         var value: catchup_gen.HistoryEvent = .{};
         var info: DDS.SampleInfo = .{};
@@ -74,11 +81,17 @@ fn onDataAvailable(state: *State, dr: DDS.DataReader) void {
         } else if (value.seq_num >= HISTORICAL_COUNT and value.seq_num < HISTORICAL_COUNT + LIVE_COUNT) {
             std.debug.print("LIVE SAMPLE seq_num={d}\n", .{value.seq_num});
             state.live_received[@intCast(value.seq_num - HISTORICAL_COUNT)].store(true, .release);
-            checkAllDone(state);
+            if (!state.all_done.load(.acquire) and !became_done and readyToFinish(state)) {
+                became_done = true;
+            }
         } else {
             std.debug.print("FAIL: unexpected seq_num={d}\n", .{value.seq_num});
             std.process.exit(1);
         }
+    }
+
+    if (became_done) {
+        state.all_done.store(true, .release);
     }
 }
 
@@ -192,7 +205,9 @@ pub fn main(init: std.process.Init) !void {
     }
     std.debug.print("HISTORICAL BATCH COMPLETE ({d} samples)\n", .{HISTORICAL_COUNT});
     state.historical_confirmed.store(true, .release);
-    checkAllDone(&state);
+    if (readyToFinish(&state)) {
+        state.all_done.store(true, .release);
+    }
 
     const deadline = monoNs(io) + RECEIVE_TIMEOUT_NS;
     while (!state.all_done.load(.acquire)) {

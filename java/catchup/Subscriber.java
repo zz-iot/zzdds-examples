@@ -26,12 +26,17 @@ public class Subscriber {
     static final int RECEIVE_TIMEOUT_MS = 30000;
     static final int POLL_PERIOD_MS = 20;
 
-    static void checkAllDone(AtomicBoolean historicalConfirmed, AtomicBoolean[] liveReceived, AtomicBoolean allDone) {
-        if (!historicalConfirmed.get()) return;
+    // Pure readiness check -- does NOT set allDone itself. Callers decide
+    // when it's safe to actually commit the flag: main() deletes the
+    // reader as soon as it observes allDone, so setting it while
+    // on_data_available is still inside its take loop would let
+    // delete_datareader() race that same invocation's next take() call.
+    static boolean readyToFinish(AtomicBoolean historicalConfirmed, AtomicBoolean[] liveReceived) {
+        if (!historicalConfirmed.get()) return false;
         for (AtomicBoolean v : liveReceived) {
-            if (!v.get()) return;
+            if (!v.get()) return false;
         }
-        allDone.set(true);
+        return true;
     }
 
     static int parseDomain(String[] args) {
@@ -107,6 +112,14 @@ public class Subscriber {
 
             public void on_data_available(Dcps.DDS.DataReader r) {
                 HistoryEventDataReader reader = (HistoryEventDataReader) readerBox[0];
+                // Deferred, not set directly inside the loop below: main()
+                // deletes the reader as soon as it observes allDone, so
+                // setting it mid-loop would let main()'s
+                // delete_datareader() race this same invocation's next
+                // take() call. Only commit the flag once this invocation's
+                // take loop has fully drained and won't touch the reader
+                // again.
+                boolean becameDone = false;
                 HistoryEventDataReader.Sample sample;
                 while ((sample = reader.take()) != null) {
                     if (!sample.validData) continue;
@@ -116,11 +129,16 @@ public class Subscriber {
                     } else if (seqNum >= HISTORICAL_COUNT && seqNum < HISTORICAL_COUNT + LIVE_COUNT) {
                         System.out.println("LIVE SAMPLE seq_num=" + seqNum);
                         liveReceived[seqNum - HISTORICAL_COUNT].set(true);
-                        checkAllDone(historicalConfirmed, liveReceived, allDone);
+                        if (!allDone.get() && !becameDone && readyToFinish(historicalConfirmed, liveReceived)) {
+                            becameDone = true;
+                        }
                     } else {
                         System.err.println("FAIL: unexpected seq_num=" + seqNum);
                         System.exit(1);
                     }
+                }
+                if (becameDone) {
+                    allDone.set(true);
                 }
             }
         };
@@ -174,11 +192,14 @@ public class Subscriber {
         }
         System.out.println("HISTORICAL BATCH COMPLETE (" + HISTORICAL_COUNT + " samples)");
         historicalConfirmed.set(true);
-        // checkAllDone() only re-checks when a *new* live sample arrives on
-        // the listener thread -- if every live sample already arrived (and
-        // each check found historicalConfirmed still false) before this line
-        // ran, nothing would ever re-check again. Mirror the same check here.
-        checkAllDone(historicalConfirmed, liveReceived, allDone);
+        // readyToFinish() only gets re-evaluated when a *new* live sample
+        // arrives on the listener thread -- if every live sample already
+        // arrived (and each check found historicalConfirmed still false)
+        // before this line ran, nothing would ever re-check again. Mirror
+        // the same check here.
+        if (readyToFinish(historicalConfirmed, liveReceived)) {
+            allDone.set(true);
+        }
 
         long deadline = System.currentTimeMillis() + RECEIVE_TIMEOUT_MS;
         while (!allDone.get()) {

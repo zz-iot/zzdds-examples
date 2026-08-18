@@ -72,6 +72,14 @@ public:
     explicit SubListener(SubState *state) : state_(state) {}
 
     void on_data_available(std::shared_ptr<::DDS::DataReader> /*the_reader*/) override {
+        // Deferred, not stored directly inside the loop below: main()
+        // deletes the reader as soon as it observes state_->all_done, so
+        // storing it mid-loop would let main()'s delete_datareader() race
+        // this same invocation's next take() call. Only commit the flag
+        // once this invocation's take loop has fully drained and won't
+        // touch the reader again.
+        bool became_done = false;
+
         for (;;) {
             SensorReadingDataReader::Sample sample{};
             uint8_t buf[512];
@@ -120,7 +128,7 @@ public:
                     std::exit(1);
             }
 
-            if (all_instances_done(state_) && !state_->all_done.load()) {
+            if (all_instances_done(state_) && !state_->all_done.load() && !became_done) {
                 InstanceTrack *c_track = track_for(state_, 3);
                 ::SensorReading query;
                 query.sensor_id = 3;
@@ -131,8 +139,12 @@ public:
                     std::exit(1);
                 }
                 std::printf("Subscriber: lookup_instance round-trip OK for sensor_id=3\n");
-                state_->all_done.store(true);
+                became_done = true;
             }
+        }
+
+        if (became_done) {
+            state_->all_done.store(true);
         }
     }
 

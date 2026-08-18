@@ -38,17 +38,23 @@ typedef struct {
     atomic_bool all_done;
 } SubState;
 
-static void check_all_done(SubState *state) {
-    if (!atomic_load(&state->historical_confirmed)) return;
+/* Pure readiness check -- does NOT store all_done itself. Callers decide
+ * when it's safe to actually commit the flag (see on_data_available's
+ * deferred-store comment: main() deletes the reader as soon as it observes
+ * all_done, so storing it while still inside a take loop would let
+ * delete_datareader() race that same invocation's next take() call). */
+static bool ready_to_finish(SubState *state) {
+    if (!atomic_load(&state->historical_confirmed)) return false;
     for (int i = 0; i < LIVE_COUNT; i++) {
-        if (!atomic_load(&state->live_received[i])) return;
+        if (!atomic_load(&state->live_received[i])) return false;
     }
-    atomic_store(&state->all_done, true);
+    return true;
 }
 
 static void on_data_available(DDS_DataReader the_reader, void *listener_data) {
     (void)the_reader;
     SubState *state = (SubState *)listener_data;
+    bool became_done = false;
 
     for (;;) {
         HistoryEvent value;
@@ -72,11 +78,17 @@ static void on_data_available(DDS_DataReader the_reader, void *listener_data) {
         } else if (seq_num >= HISTORICAL_COUNT && seq_num < HISTORICAL_COUNT + LIVE_COUNT) {
             printf("LIVE SAMPLE seq_num=%d\n", seq_num);
             atomic_store(&state->live_received[seq_num - HISTORICAL_COUNT], true);
-            check_all_done(state);
+            if (!atomic_load(&state->all_done) && !became_done && ready_to_finish(state)) {
+                became_done = true;
+            }
         } else {
             fprintf(stderr, "FAIL: unexpected seq_num=%d\n", seq_num);
             exit(1);
         }
+    }
+
+    if (became_done) {
+        atomic_store(&state->all_done, true);
     }
 }
 
@@ -190,7 +202,9 @@ int main(int argc, char **argv) {
     }
     printf("HISTORICAL BATCH COMPLETE (%d samples)\n", HISTORICAL_COUNT);
     atomic_store(&state.historical_confirmed, true);
-    check_all_done(&state);
+    if (ready_to_finish(&state)) {
+        atomic_store(&state.all_done, true);
+    }
 
     for (int waited_ms = 0; !atomic_load(&state.all_done); waited_ms += POLL_PERIOD_MS) {
         if (waited_ms >= RECEIVE_TIMEOUT_MS) {

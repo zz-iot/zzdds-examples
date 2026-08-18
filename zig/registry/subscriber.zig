@@ -76,6 +76,13 @@ fn allInstancesDone(state: *State) bool {
 
 fn onDataAvailable(state: *State, dr: DDS.DataReader) void {
     _ = dr;
+    // Deferred, not stored directly inside the loop below: main() deletes
+    // the reader as soon as it observes state.all_done, so storing it
+    // mid-loop would let main()'s delete_datareader() race this same
+    // invocation's next take_next_sample() call. Only commit the flag once
+    // this invocation's take loop has fully drained and won't touch the
+    // reader again.
+    var became_done = false;
     while (true) {
         var value: registry_gen.SensorReading = .{};
         var info: DDS.SampleInfo = .{};
@@ -134,8 +141,12 @@ fn onDataAvailable(state: *State, dr: DDS.DataReader) void {
             }
             std.debug.print("Subscriber: lookup_instance round-trip OK for sensor_id=3\n", .{});
             state.lookup_checked.store(true, .release);
-            state.all_done.store(true, .release);
+            became_done = true;
         }
+    }
+
+    if (became_done) {
+        state.all_done.store(true, .release);
     }
 }
 

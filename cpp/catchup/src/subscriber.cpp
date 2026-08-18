@@ -46,12 +46,17 @@ struct SubState {
         for (auto &v : live_received) v.store(false);
     }
 
-    void check_all_done() {
-        if (!historical_confirmed.load()) return;
+    // Pure readiness check -- does NOT store all_done itself. Callers
+    // decide when it's safe to actually commit the flag: main() deletes
+    // the reader as soon as it observes all_done, so storing it while
+    // on_data_available is still inside its take loop would let
+    // delete_datareader() race that same invocation's next take() call.
+    bool ready_to_finish() {
+        if (!historical_confirmed.load()) return false;
         for (auto &v : live_received) {
-            if (!v.load()) return;
+            if (!v.load()) return false;
         }
-        all_done.store(true);
+        return true;
     }
 };
 
@@ -60,6 +65,8 @@ public:
     explicit SubListener(SubState *state) : state_(state) {}
 
     void on_data_available(std::shared_ptr<::DDS::DataReader> /*the_reader*/) override {
+        bool became_done = false;
+
         for (;;) {
             HistoryEventDataReader::Sample sample{};
             uint8_t buf[512];
@@ -79,11 +86,17 @@ public:
             } else if (seq_num >= HISTORICAL_COUNT && seq_num < HISTORICAL_COUNT + LIVE_COUNT) {
                 std::printf("LIVE SAMPLE seq_num=%d\n", seq_num);
                 state_->live_received[seq_num - HISTORICAL_COUNT].store(true);
-                state_->check_all_done();
+                if (!state_->all_done.load() && !became_done && state_->ready_to_finish()) {
+                    became_done = true;
+                }
             } else {
                 std::fprintf(stderr, "FAIL: unexpected seq_num=%d\n", seq_num);
                 std::exit(1);
             }
+        }
+
+        if (became_done) {
+            state_->all_done.store(true);
         }
     }
 
@@ -194,7 +207,9 @@ int main(int argc, char **argv) {
     }
     std::printf("HISTORICAL BATCH COMPLETE (%d samples)\n", HISTORICAL_COUNT);
     state.historical_confirmed.store(true);
-    state.check_all_done();
+    if (state.ready_to_finish()) {
+        state.all_done.store(true);
+    }
 
     for (int waited_ms = 0; !state.all_done.load(); waited_ms += POLL_PERIOD_MS) {
         if (waited_ms >= RECEIVE_TIMEOUT_MS) {

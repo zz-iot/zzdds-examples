@@ -114,6 +114,14 @@ public class Subscriber {
 
             public void on_data_available(Dcps.DDS.DataReader r) {
                 SensorReadingDataReader reader = (SensorReadingDataReader) readerBox[0];
+                // Deferred, not set directly inside the loop below: main()
+                // deletes the reader as soon as it observes allDone, so
+                // setting it mid-loop would let main()'s
+                // delete_datareader() race this same invocation's next
+                // take() call. Only commit the flag once this invocation's
+                // take loop has fully drained and won't touch the reader
+                // again.
+                boolean becameDone = false;
                 SensorReadingDataReader.Sample sample;
                 while ((sample = reader.take()) != null) {
                     int sensorId = sample.data.get_sensor_id();
@@ -149,7 +157,7 @@ public class Subscriber {
                         System.exit(1);
                     }
 
-                    if (allInstancesDone(tracks) && !allDone.get()) {
+                    if (allInstancesDone(tracks) && !allDone.get() && !becameDone) {
                         InstanceTrack cTrack = trackFor(tracks, 3);
                         Registry_sample.SensorReading query = new Registry_sample.SensorReading();
                         query.set_sensor_id(3);
@@ -159,8 +167,11 @@ public class Subscriber {
                             System.exit(1);
                         }
                         System.out.println("Subscriber: lookup_instance round-trip OK for sensor_id=3");
-                        allDone.set(true);
+                        becameDone = true;
                     }
+                }
+                if (becameDone) {
+                    allDone.set(true);
                 }
             }
         };

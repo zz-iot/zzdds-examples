@@ -66,6 +66,13 @@ static bool all_instances_done(SubState *state) {
 static void on_data_available(DDS_DataReader the_reader, void *listener_data) {
     (void)the_reader;
     SubState *state = (SubState *)listener_data;
+    /* Deferred, not stored directly inside the loop below: main() deletes
+     * the reader as soon as it observes state->all_done, so storing it
+     * mid-loop would let main()'s delete_datareader() race this same
+     * invocation's next take() call. Only commit the flag once this
+     * invocation's take loop has fully drained and won't touch the reader
+     * again. */
+    bool became_done = false;
 
     for (;;) {
         SensorReading value;
@@ -118,7 +125,7 @@ static void on_data_available(DDS_DataReader the_reader, void *listener_data) {
                 exit(1);
         }
 
-        if (all_instances_done(state) && !atomic_load(&state->all_done)) {
+        if (all_instances_done(state) && !atomic_load(&state->all_done) && !became_done) {
             InstanceTrack *c_track = track_for(state, 3);
             SensorReading query;
             memset(&query, 0, sizeof(query));
@@ -129,8 +136,12 @@ static void on_data_available(DDS_DataReader the_reader, void *listener_data) {
                 exit(1);
             }
             printf("Subscriber: lookup_instance round-trip OK for sensor_id=3\n");
-            atomic_store(&state->all_done, true);
+            became_done = true;
         }
+    }
+
+    if (became_done) {
+        atomic_store(&state->all_done, true);
     }
 }
 
