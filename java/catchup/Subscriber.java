@@ -125,7 +125,15 @@ public class Subscriber {
             }
         };
 
-        Dcps.DDS.DataReader rawReader = sub.create_datareader(topic, drQos, listener, Dcps.DDS.DATA_AVAILABLE_STATUS.value);
+        // Create with no listener attached yet: on_data_available fires on
+        // a zzdds-internal dispatch thread as soon as the reader matches
+        // the publisher's already-written historical batch, which can race
+        // readerBox[0]'s own assignment below (a real, not hypothetical,
+        // race given this example's whole point is data being ready before
+        // the reader even exists). Attach the listener only once
+        // readerBox[0] is set, via set_listener() below, closing the
+        // window entirely.
+        Dcps.DDS.DataReader rawReader = sub.create_datareader(topic, drQos, null, 0);
         if (rawReader == null) {
             System.err.println("FAIL: create_datareader() failed");
             System.exit(1);
@@ -133,6 +141,10 @@ public class Subscriber {
         System.out.println("Create reader for topic: HistoryEvent");
 
         readerBox[0] = new HistoryEventDataReader(rawReader);
+        if (rawReader.set_listener(listener, Dcps.DDS.DATA_AVAILABLE_STATUS.value) != 0) {
+            System.err.println("FAIL: set_listener() failed");
+            System.exit(1);
+        }
 
         // The API this whole example exists to exercise: block until the
         // TRANSIENT_LOCAL historical replay has actually landed, before

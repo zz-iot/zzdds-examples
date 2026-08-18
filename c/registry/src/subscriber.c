@@ -194,8 +194,13 @@ int main(int argc, char **argv) {
     listener.listener_data = &state;
     listener.on_data_available = on_data_available;
 
+    /* Create with no listener attached yet: on_data_available fires on a
+     * zzdds-internal dispatch thread as soon as the reader matches, which
+     * can race state.reader's own initialization below. Attach the listener
+     * only once state.reader is set, via set_listener() below, closing the
+     * window entirely. */
     DDS_TopicDescription topic_desc = zzdds_topic_as_description(topic);
-    DDS_DataReader dr = DDS_Subscriber_create_datareader(sub, topic_desc, &dr_qos, &listener, DDS_DATA_AVAILABLE_STATUS);
+    DDS_DataReader dr = DDS_Subscriber_create_datareader(sub, topic_desc, &dr_qos, NULL, 0);
     if (!dr) {
         fprintf(stderr, "FAIL: create_datareader() failed\n");
         return 1;
@@ -205,6 +210,11 @@ int main(int argc, char **argv) {
     SensorReadingDataReader reader;
     SensorReadingDataReader_init(&reader, dr);
     state.reader = &reader;
+
+    if (DDS_DataReader_set_listener(dr, &listener, DDS_DATA_AVAILABLE_STATUS) != DDS_RETCODE_OK) {
+        fprintf(stderr, "FAIL: set_listener() failed\n");
+        return 1;
+    }
 
     printf("Subscriber: waiting for all three instance lifecycles...\n");
     for (int waited_ms = 0; !atomic_load(&state.all_done); waited_ms += POLL_PERIOD_MS) {

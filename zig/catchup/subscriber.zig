@@ -148,14 +148,26 @@ pub fn main(init: std.process.Init) !void {
         .on_data_available = onDataAvailable,
     });
 
+    // Create with no listener attached yet: on_data_available fires on a
+    // zzdds-internal dispatch thread as soon as the reader matches the
+    // publisher's already-written historical batch, which can race
+    // state.reader's own initialization below (a real, not hypothetical,
+    // race given this example's whole point is data being ready before the
+    // reader even exists). Attach the listener only once state.reader is
+    // set, via set_listener() below, closing the window entirely.
     const topic_desc = dp.lookup_topicdescription("HistoryEvent");
-    const dr = subscriber.create_datareader(topic_desc, dr_qos, dr_listener, DDS.DATA_AVAILABLE_STATUS);
+    const dr = subscriber.create_datareader(topic_desc, dr_qos, null, 0);
     if (dr.ptr == zzdds.dcps.NIL_PTR) {
         std.debug.print("FAIL: create_datareader() failed\n", .{});
         std.process.exit(1);
     }
     std.debug.print("Create reader for topic: HistoryEvent\n", .{});
     state.reader = catchup_gen.HistoryEventDataReader.init(dr, alloc);
+    const set_rc = dr.set_listener(dr_listener, DDS.DATA_AVAILABLE_STATUS);
+    if (set_rc != DDS.RETCODE_OK) {
+        std.debug.print("FAIL: set_listener() returned {d}\n", .{set_rc});
+        std.process.exit(1);
+    }
 
     // The API this whole example exists to exercise: block until the
     // TRANSIENT_LOCAL historical replay has actually landed, before taking

@@ -144,9 +144,16 @@ int main(int argc, char **argv) {
     SubState state;
     auto listener = std::make_shared<SubListener>(&state);
 
+    // Create with no listener attached yet: on_data_available fires on a
+    // zzdds-internal dispatch thread as soon as the reader matches the
+    // publisher's already-written historical batch, which can race
+    // state.reader's own initialization below (a real, not hypothetical,
+    // race given this example's whole point is data being ready before the
+    // reader even exists). Attach the listener only once state.reader is
+    // set, via set_listener() below, closing the window entirely.
     auto ztopic = std::static_pointer_cast<::zzdds::TopicImpl>(topic);
     auto topic_desc = ztopic->as_topic_description();
-    auto dr = sub->create_datareader(topic_desc, dr_qos, listener, DDS_DATA_AVAILABLE_STATUS);
+    auto dr = sub->create_datareader(topic_desc, dr_qos, nullptr, 0);
     if (!dr) {
         std::fprintf(stderr, "FAIL: create_datareader() failed\n");
         return 1;
@@ -156,6 +163,11 @@ int main(int argc, char **argv) {
     auto dr_handle = dr->native_handle();
     HistoryEventDataReader reader(dr_handle);
     state.reader = &reader;
+
+    if (dr->set_listener(listener, DDS_DATA_AVAILABLE_STATUS) != ::DDS::RETCODE_OK) {
+        std::fprintf(stderr, "FAIL: set_listener() failed\n");
+        return 1;
+    }
 
     // The API this whole example exists to exercise: block until the
     // TRANSIENT_LOCAL historical replay has actually landed, before taking

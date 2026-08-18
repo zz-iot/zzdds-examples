@@ -153,10 +153,14 @@ int main(int argc, char **argv) {
     SubState state;
     auto listener = std::make_shared<SubListener>(&state);
 
+    // Create with no listener attached yet: on_data_available/
+    // on_liveliness_changed fire on a zzdds-internal dispatch thread as soon
+    // as the reader matches, which can race state.reader's own
+    // initialization below. Attach the listener only once state.reader is
+    // set, via set_listener() below, closing the window entirely.
     auto ztopic = std::static_pointer_cast<::zzdds::TopicImpl>(topic);
     auto topic_desc = ztopic->as_topic_description();
-    auto dr = sub->create_datareader(topic_desc, dr_qos, listener,
-                                      DDS_DATA_AVAILABLE_STATUS | DDS_LIVELINESS_CHANGED_STATUS);
+    auto dr = sub->create_datareader(topic_desc, dr_qos, nullptr, 0);
     if (!dr) {
         std::fprintf(stderr, "FAIL: create_datareader() failed\n");
         return 1;
@@ -166,6 +170,11 @@ int main(int argc, char **argv) {
     auto dr_handle = dr->native_handle();
     PresenceBeaconDataReader reader(dr_handle);
     state.reader = &reader;
+
+    if (dr->set_listener(listener, DDS_DATA_AVAILABLE_STATUS | DDS_LIVELINESS_CHANGED_STATUS) != ::DDS::RETCODE_OK) {
+        std::fprintf(stderr, "FAIL: set_listener() failed\n");
+        return 1;
+    }
 
     std::printf("Subscriber: waiting for online -> offline -> online cycle...\n");
     for (int waited_ms = 0; !state.cycle_complete.load(); waited_ms += POLL_PERIOD_MS) {

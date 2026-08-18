@@ -165,8 +165,12 @@ public class Subscriber {
             }
         };
 
-        Dcps.DDS.DataReader rawReader = sub.create_datareader(topic, drQos, listener,
-            Dcps.DDS.DATA_AVAILABLE_STATUS.value);
+        // Create with no listener attached yet: on_data_available fires on
+        // a zzdds-internal dispatch thread as soon as the reader matches,
+        // which can race readerBox[0]'s own assignment below. Attach the
+        // listener only once readerBox[0] is set, via set_listener()
+        // below, closing the window entirely.
+        Dcps.DDS.DataReader rawReader = sub.create_datareader(topic, drQos, null, 0);
         if (rawReader == null) {
             System.err.println("FAIL: create_datareader() failed");
             System.exit(1);
@@ -174,6 +178,10 @@ public class Subscriber {
         System.out.println("Create reader for topic: SensorReading");
 
         readerBox[0] = new SensorReadingDataReader(rawReader);
+        if (rawReader.set_listener(listener, Dcps.DDS.DATA_AVAILABLE_STATUS.value) != 0) {
+            System.err.println("FAIL: set_listener() failed");
+            System.exit(1);
+        }
 
         System.out.println("Subscriber: waiting for all three instance lifecycles...");
         long deadline = System.currentTimeMillis() + RECEIVE_TIMEOUT_MS;

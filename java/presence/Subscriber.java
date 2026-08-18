@@ -129,8 +129,12 @@ public class Subscriber {
             }
         };
 
-        Dcps.DDS.DataReader rawReader = sub.create_datareader(topic, drQos, listener,
-            Dcps.DDS.DATA_AVAILABLE_STATUS.value | Dcps.DDS.LIVELINESS_CHANGED_STATUS.value);
+        // Create with no listener attached yet: on_data_available/
+        // on_liveliness_changed fire on a zzdds-internal dispatch thread as
+        // soon as the reader matches, which can race readerBox[0]'s own
+        // assignment below. Attach the listener only once readerBox[0] is
+        // set, via set_listener() below, closing the window entirely.
+        Dcps.DDS.DataReader rawReader = sub.create_datareader(topic, drQos, null, 0);
         if (rawReader == null) {
             System.err.println("FAIL: create_datareader() failed");
             System.exit(1);
@@ -138,6 +142,11 @@ public class Subscriber {
         System.out.println("Create reader for topic: PresenceBeacon");
 
         readerBox[0] = new PresenceBeaconDataReader(rawReader);
+        int listenerMask = Dcps.DDS.DATA_AVAILABLE_STATUS.value | Dcps.DDS.LIVELINESS_CHANGED_STATUS.value;
+        if (rawReader.set_listener(listener, listenerMask) != 0) {
+            System.err.println("FAIL: set_listener() failed");
+            System.exit(1);
+        }
 
         System.out.println("Subscriber: waiting for online -> offline -> online cycle...");
         long deadline = System.currentTimeMillis() + CYCLE_TIMEOUT_MS;
