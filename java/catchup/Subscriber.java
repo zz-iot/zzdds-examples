@@ -119,6 +119,16 @@ public class Subscriber {
                 // take() call. Only commit the flag once this invocation's
                 // take loop has fully drained and won't touch the reader
                 // again.
+                //
+                // main() can also independently reach the same conclusion
+                // (see readyToFinish() right after wait_for_historical_data()
+                // returns below) and call delete_datareader() while this
+                // invocation is still draining regardless. That's still
+                // fine: zzdds's core EntityQuiesce mechanism (not anything
+                // in this file) guarantees a delete_datareader() racing an
+                // in-flight take() call is memory-safe -- the racing take()
+                // either completes normally (started before teardown) or
+                // cleanly sees "no data" (started after), never a crash.
                 boolean becameDone = false;
                 HistoryEventDataReader.Sample sample;
                 while ((sample = reader.take()) != null) {

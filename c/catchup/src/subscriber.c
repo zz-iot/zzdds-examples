@@ -54,6 +54,14 @@ static bool ready_to_finish(SubState *state) {
 static void on_data_available(DDS_DataReader the_reader, void *listener_data) {
     (void)the_reader;
     SubState *state = (SubState *)listener_data;
+    /* main() can also independently decide it's done (see the
+     * ready_to_finish() call right after wait_for_historical_data()
+     * returns below) and call delete_datareader() while this invocation is
+     * still draining. That's still fine: zzdds's core EntityQuiesce
+     * mechanism (not anything in this file) guarantees a delete_datareader()
+     * racing an in-flight take() call is memory-safe -- the racing take()
+     * either completes normally (started before teardown) or cleanly sees
+     * "no data" (started after), never a crash or use-after-free. */
     bool became_done = false;
 
     for (;;) {

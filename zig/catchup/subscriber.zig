@@ -65,6 +65,14 @@ fn readyToFinish(state: *State) bool {
 
 fn onDataAvailable(state: *State, dr: DDS.DataReader) void {
     _ = dr;
+    // main() can also independently decide it's done (see readyToFinish()
+    // right after wait_for_historical_data() returns below) and call
+    // delete_datareader() while this invocation is still draining. That's
+    // still fine: zzdds's core EntityQuiesce mechanism (not anything in
+    // this file) guarantees a delete_datareader() racing an in-flight
+    // take_next_sample() call is memory-safe -- the racing call either
+    // completes normally (started before teardown) or cleanly sees "no
+    // data" (started after), never a crash or use-after-free.
     var became_done = false;
     while (true) {
         var value: catchup_gen.HistoryEvent = .{};
