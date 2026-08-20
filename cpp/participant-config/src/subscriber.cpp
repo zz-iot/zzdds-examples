@@ -174,9 +174,14 @@ int main(int argc, char **argv) {
     SubState state;
     auto listener = std::make_shared<SubListener>(&state);
 
+    // Create with no listener attached yet: on_data_available fires on a
+    // zzdds-internal dispatch thread as soon as the reader matches, which
+    // can race state.reader's own initialization below. Attach the
+    // listener only once state.reader is set, via set_listener() below,
+    // closing the window entirely.
     auto ztopic = std::static_pointer_cast<::zzdds::TopicImpl>(topic);
     auto topic_desc = ztopic->as_topic_description();
-    auto dr = sub->create_datareader(topic_desc, dr_qos, listener, DDS_DATA_AVAILABLE_STATUS);
+    auto dr = sub->create_datareader(topic_desc, dr_qos, nullptr, 0);
     if (!dr) {
         std::fprintf(stderr, "FAIL: create_datareader() failed\n");
         return 1;
@@ -186,6 +191,11 @@ int main(int argc, char **argv) {
     auto dr_handle = dr->native_handle();
     ConfigPingDataReader reader(dr_handle);
     state.reader = &reader;
+
+    if (dr->set_listener(listener, DDS_DATA_AVAILABLE_STATUS) != ::DDS::RETCODE_OK) {
+        std::fprintf(stderr, "FAIL: set_listener() failed\n");
+        return 1;
+    }
 
     std::printf("Subscriber: waiting for %d samples...\n", EXPECTED_SAMPLES);
     for (int waited_ms = 0; !state.all_received.load(); waited_ms += POLL_PERIOD_MS) {
