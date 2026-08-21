@@ -128,6 +128,13 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
         var found = false;
+        // Reused across every iteration below, not re-declared per handle:
+        // safe because get_discovered_topic_data() itself frees whatever
+        // topic_data already holds before writing the next result (see
+        // vtGetDiscoveredTopicData's comment in zzdds's
+        // src/dcps/participant.zig) -- a failed lookup (RETCODE_BAD_PARAMETER)
+        // leaves topic_data untouched, so this defer always cleans up
+        // exactly one live result, never more.
         var topic_data: DDS.TopicBuiltinTopicData = .{};
         defer topic_data.deinit(std.heap.c_allocator);
         for (handles._buffer.?[0..handles._length]) |h| {
